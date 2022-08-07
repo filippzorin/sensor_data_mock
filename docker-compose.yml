@@ -1,23 +1,33 @@
 version: "3.3"
 
 services:
+  sensor_api:
+    image: tiangolo/uvicorn-gunicorn-fastapi:python3.9
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./sensor_api:/app
+    working_dir: /app
+    entrypoint:
+      - "uvicorn"
+      - "main:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+
   nifi:
     image: apache/nifi:latest
     ports:
       - "9090:9090"
     environment:
       NIFI_WEB_HTTP_PORT: '9090'
+    depends_on:
+      - sensor_api
+      - nifi_registry
+      - kafka
     volumes:
-        - "<path_to_jdbc>/:/jdbc"
-
-  nifi_2:
-    image: apache/nifi:latest
-    ports:
-      - "9091:9091"
-    environment:
-      NIFI_WEB_HTTP_PORT: '9091'
-    volumes:
-        - "<path_to_jdbc>/:/jdbc"
+      - ./nifi/conf:/opt/nifi/nifi-current/conf
 
   nifi_registry:
     image: apache/nifi-registry:latest
@@ -25,6 +35,9 @@ services:
       - "19090:19090"
     environment:
       NIFI_REGISTRY_WEB_HTTP_PORT: '19090'
+    volumes:
+      - ./nifi_registry/database:/opt/nifi-registry/nifi-registry-current/database
+      - ./nifi_registry/flow_storage:/opt/nifi-registry/nifi-registry-current/flow_storage
 
   kafka:
     image: spotify/kafka
@@ -32,21 +45,29 @@ services:
       - "9092:9092"
       - "2181:2181"
     environment:
-      ADVERTISED_HOST: '192.168.0.205'
+      ADVERTISED_HOST: 'kafka'
       ADVERTISED_PORT: 9092
-      TOPICS: 'news'
+    command: >
+      bash -c
+      "(sleep 15s &&
+      /opt/kafka_2.11-0.10.1.0/bin/kafka-topics.sh
+      --create
+      --zookeeper
+      localhost:2181 --replication-factor 1 --partitions 1
+      --topic sensor_data &) && (supervisord -n)"
 
   clickhouse:
     image: yandex/clickhouse-server
     ports:
       - 8123:8123
-    volumes:
-        - "<path_to_storage_data>/opt/clickhouse_data:/var/lib/clickhouse"
     ulimits:
       nproc: 65535
       nofile:
        soft: 262144
        hard: 262144
+    volumes:
+      - ./clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      - ./clickhouse/init_queries/:/docker-entrypoint-initdb.d/
   # ch_client:
   #     image: yandex/clickhouse-client
   #     command: ['--host', 'server']
@@ -54,6 +75,12 @@ services:
     image: spoonest/clickhouse-tabix-web-client
     ports:
       - 8080:80
+    depends_on:
+      - clickhouse
+    environment:
+      CH_NAME: "dev"
+      CH_HOST: "localhost:8123"
+      CH_LOGIN: "default"
 
 volumes:
   zookeeper_data:
